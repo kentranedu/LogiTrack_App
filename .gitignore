@@ -5,3 +5,8 @@ obj/
 # Nested project build output folders
 **/bin/
 **/obj/
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
