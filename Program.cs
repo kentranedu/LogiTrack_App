@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json.Serialization;
+using LogiTrack.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -29,6 +30,22 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
     app.MapOpenApi();
 }
+
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "application/json";
+
+        var error = ApiError.Create(
+            "ServerError",
+            "An unexpected error occurred.",
+            context.TraceIdentifier);
+
+        await context.Response.WriteAsJsonAsync(error);
+    });
+});
 
 app.UseHttpsRedirection();
 

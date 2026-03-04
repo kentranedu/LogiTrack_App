@@ -51,7 +51,7 @@ namespace LogiTrack.Controllers
 
             if (order == null)
             {
-                return NotFound();
+                return NotFound(ApiError.Create("NotFound", $"Order with id {id} was not found.", HttpContext.TraceIdentifier));
             }
 
             return Ok(order);
@@ -62,7 +62,7 @@ namespace LogiTrack.Controllers
         {
             if (string.IsNullOrWhiteSpace(request.CustomerName))
             {
-                return BadRequest("CustomerName is required.");
+                return BadRequest(ApiError.Create("ValidationError", "CustomerName is required.", HttpContext.TraceIdentifier));
             }
 
             var order = new Order
@@ -101,7 +101,7 @@ namespace LogiTrack.Controllers
             var order = await _context.Orders.FindAsync(id);
             if (order == null)
             {
-                return NotFound();
+                return NotFound(ApiError.Create("NotFound", $"Order with id {id} was not found.", HttpContext.TraceIdentifier));
             }
 
             _context.Orders.Remove(order);

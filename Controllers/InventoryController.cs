@@ -29,7 +29,7 @@ namespace LogiTrack.Controllers
             var item = await _context.InventoryItems.FindAsync(id);
             if (item == null)
             {
-                return NotFound();
+                return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
             }
 
             return item;
@@ -38,6 +38,11 @@ namespace LogiTrack.Controllers
         [HttpPost]
         public async Task<ActionResult<InventoryItem>> AddInventoryItem([FromBody] InventoryItem item)
         {
+            if (string.IsNullOrWhiteSpace(item.Name) || string.IsNullOrWhiteSpace(item.Location))
+            {
+                return BadRequest(ApiError.Create("ValidationError", "Name and Location are required.", HttpContext.TraceIdentifier));
+            }
+
             _context.InventoryItems.Add(item);
             await _context.SaveChangesAsync();
             return CreatedAtAction(nameof(GetInventoryItem), new { id = item.ItemId }, item);
@@ -48,7 +53,7 @@ namespace LogiTrack.Controllers
         {
             var item = await _context.InventoryItems.FindAsync(id);
             if (item == null)
-                return NotFound();
+                return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
 
             _context.InventoryItems.Remove(item);
             await _context.SaveChangesAsync();
