@@ -1,4 +1,5 @@
 using LogiTrack.Models;
+using Microsoft.EntityFrameworkCore;
 
 using (var context = new LogiTrackContext())
 {
@@ -21,6 +22,10 @@ using (var context = new LogiTrackContext())
     {
         item.DisplayInfo(); // Should print: Item: Pallet Jack | Quantity: 12 | Location: Warehouse A
     }
+
+    Console.WriteLine();
+    Console.WriteLine("=== Database Order Summaries ===");
+    PrintOrderSummaries(context);
 }
 
 var builder = WebApplication.CreateBuilder(args);
@@ -100,6 +105,31 @@ order.AddItem(monitor);
 order.RemoveItem(2);
 
 Console.WriteLine(order.GetOrderSummary());
+
+static void PrintOrderSummaries(LogiTrackContext context)
+{
+    var orderSummaries = context.Orders
+        .AsNoTracking()
+        .Select(order => new
+        {
+            order.OrderId,
+            order.CustomerName,
+            order.DatePlaced,
+            ItemCount = order.Items.Count
+        })
+        .ToList();
+
+    if (orderSummaries.Count == 0)
+    {
+        Console.WriteLine("No orders found.");
+        return;
+    }
+
+    foreach (var orderSummary in orderSummaries)
+    {
+        Console.WriteLine($"Order #{orderSummary.OrderId} for {orderSummary.CustomerName} | Items: {orderSummary.ItemCount} | Placed: {orderSummary.DatePlaced:M/d/yyyy}");
+    }
+}
 
 app.Run();
 
