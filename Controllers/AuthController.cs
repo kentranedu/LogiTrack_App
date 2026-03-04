@@ -1,8 +1,10 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using System.ComponentModel.DataAnnotations;
 using LogiTrack.Models;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
 
@@ -14,27 +16,25 @@ namespace LogiTrack.Controllers
 	{
 		private readonly UserManager<ApplicationUser> _userManager;
 		private readonly SignInManager<ApplicationUser> _signInManager;
-		private readonly RoleManager<IdentityRole> _roleManager;
 		private readonly IConfiguration _configuration;
 
 		public AuthController(
 			UserManager<ApplicationUser> userManager,
 			SignInManager<ApplicationUser> signInManager,
-			RoleManager<IdentityRole> roleManager,
 			IConfiguration configuration)
 		{
 			_userManager = userManager;
 			_signInManager = signInManager;
-			_roleManager = roleManager;
 			_configuration = configuration;
 		}
 
+		[AllowAnonymous]
 		[HttpPost("register")]
 		public async Task<IActionResult> Register(RegisterRequest request)
 		{
-			const string managerRole = "Manager";
+			var normalizedEmail = request.Email.Trim().ToLowerInvariant();
 
-			var existingUser = await _userManager.FindByEmailAsync(request.Email);
+			var existingUser = await _userManager.FindByEmailAsync(normalizedEmail);
 			if (existingUser is not null)
 			{
 				return BadRequest(new { message = "Email is already registered." });
@@ -42,8 +42,8 @@ namespace LogiTrack.Controllers
 
 			var user = new ApplicationUser
 			{
-				UserName = request.Email,
-				Email = request.Email
+				UserName = normalizedEmail,
+				Email = normalizedEmail
 			};
 
 			var result = await _userManager.CreateAsync(user, request.Password);
@@ -53,39 +53,21 @@ namespace LogiTrack.Controllers
 				return BadRequest(new { errors });
 			}
 
-			if (request.IsAdmin)
-			{
-				if (!await _roleManager.RoleExistsAsync(managerRole))
-				{
-					var roleResult = await _roleManager.CreateAsync(new IdentityRole(managerRole));
-					if (!roleResult.Succeeded)
-					{
-						var roleErrors = roleResult.Errors.Select(error => error.Description);
-						return BadRequest(new { errors = roleErrors });
-					}
-				}
-
-				var addToRoleResult = await _userManager.AddToRoleAsync(user, managerRole);
-				if (!addToRoleResult.Succeeded)
-				{
-					var roleAssignmentErrors = addToRoleResult.Errors.Select(error => error.Description);
-					return BadRequest(new { errors = roleAssignmentErrors });
-				}
-			}
-
 			return Ok(new { message = "User registered successfully." });
 		}
 
+		[AllowAnonymous]
 		[HttpPost("login")]
 		public async Task<IActionResult> Login(LoginRequest request)
 		{
-			var user = await _userManager.FindByEmailAsync(request.Email);
+			var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+			var user = await _userManager.FindByEmailAsync(normalizedEmail);
 			if (user is null)
 			{
 				return Unauthorized(new { message = "Invalid email or password." });
 			}
 
-			var passwordResult = await _signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: false);
+			var passwordResult = await _signInManager.CheckPasswordSignInAsync(user, request.Password, lockoutOnFailure: true);
 			if (!passwordResult.Succeeded)
 			{
 				return Unauthorized(new { message = "Invalid email or password." });
@@ -131,14 +113,24 @@ namespace LogiTrack.Controllers
 
 		public class RegisterRequest
 		{
+			[Required]
+			[EmailAddress]
+			[StringLength(256)]
 			public string Email { get; set; } = string.Empty;
+
+			[Required]
+			[MinLength(12)]
 			public string Password { get; set; } = string.Empty;
-			public bool IsAdmin { get; set; }
 		}
 
 		public class LoginRequest
 		{
+			[Required]
+			[EmailAddress]
+			[StringLength(256)]
 			public string Email { get; set; } = string.Empty;
+
+			[Required]
 			public string Password { get; set; } = string.Empty;
 		}
 	}
