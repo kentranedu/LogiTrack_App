@@ -1,0 +1,7 @@
+# Build output folders
+bin/
+obj/
+
+# Nested project build output folders
+**/bin/
+**/obj/
