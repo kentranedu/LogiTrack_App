@@ -27,12 +27,27 @@ namespace LogiTrack.Controllers
             return Ok(orders);
         }
 
-        [HttpGet("{id}")]
-        public async Task<ActionResult<Order>> GetOrderById(int id)
+        [HttpGet("{id:int}")]
+        public async Task<ActionResult<OrderDetailsResponse>> GetOrderById(int id)
         {
             var order = await _context.Orders
-                .Include(currentOrder => currentOrder.Items)
-                .FirstOrDefaultAsync(currentOrder => currentOrder.OrderId == id);
+                .Where(currentOrder => currentOrder.OrderId == id)
+                .Select(currentOrder => new OrderDetailsResponse
+                {
+                    OrderId = currentOrder.OrderId,
+                    CustomerName = currentOrder.CustomerName,
+                    DatePlaced = currentOrder.DatePlaced,
+                    Items = currentOrder.Items
+                        .Select(item => new OrderItemDetailsResponse
+                        {
+                            ItemId = item.ItemId,
+                            Name = item.Name,
+                            Quantity = item.Quantity,
+                            Location = item.Location
+                        })
+                        .ToList()
+                })
+                .FirstOrDefaultAsync();
 
             if (order == null)
             {
@@ -101,5 +116,21 @@ namespace LogiTrack.Controllers
         public string CustomerName { get; set; } = string.Empty;
         public System.DateTime? DatePlaced { get; set; }
         public List<int>? ItemIds { get; set; }
+    }
+
+    public class OrderDetailsResponse
+    {
+        public int OrderId { get; set; }
+        public string CustomerName { get; set; } = string.Empty;
+        public System.DateTime DatePlaced { get; set; }
+        public List<OrderItemDetailsResponse> Items { get; set; } = new();
+    }
+
+    public class OrderItemDetailsResponse
+    {
+        public int ItemId { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public int Quantity { get; set; }
+        public string Location { get; set; } = string.Empty;
     }
 }
