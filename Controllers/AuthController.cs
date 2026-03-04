@@ -14,21 +14,26 @@ namespace LogiTrack.Controllers
 	{
 		private readonly UserManager<ApplicationUser> _userManager;
 		private readonly SignInManager<ApplicationUser> _signInManager;
+		private readonly RoleManager<IdentityRole> _roleManager;
 		private readonly IConfiguration _configuration;
 
 		public AuthController(
 			UserManager<ApplicationUser> userManager,
 			SignInManager<ApplicationUser> signInManager,
+			RoleManager<IdentityRole> roleManager,
 			IConfiguration configuration)
 		{
 			_userManager = userManager;
 			_signInManager = signInManager;
+			_roleManager = roleManager;
 			_configuration = configuration;
 		}
 
 		[HttpPost("register")]
 		public async Task<IActionResult> Register(RegisterRequest request)
 		{
+			const string managerRole = "Manager";
+
 			var existingUser = await _userManager.FindByEmailAsync(request.Email);
 			if (existingUser is not null)
 			{
@@ -46,6 +51,26 @@ namespace LogiTrack.Controllers
 			{
 				var errors = result.Errors.Select(error => error.Description);
 				return BadRequest(new { errors });
+			}
+
+			if (request.IsAdmin)
+			{
+				if (!await _roleManager.RoleExistsAsync(managerRole))
+				{
+					var roleResult = await _roleManager.CreateAsync(new IdentityRole(managerRole));
+					if (!roleResult.Succeeded)
+					{
+						var roleErrors = roleResult.Errors.Select(error => error.Description);
+						return BadRequest(new { errors = roleErrors });
+					}
+				}
+
+				var addToRoleResult = await _userManager.AddToRoleAsync(user, managerRole);
+				if (!addToRoleResult.Succeeded)
+				{
+					var roleAssignmentErrors = addToRoleResult.Errors.Select(error => error.Description);
+					return BadRequest(new { errors = roleAssignmentErrors });
+				}
 			}
 
 			return Ok(new { message = "User registered successfully." });
@@ -66,17 +91,19 @@ namespace LogiTrack.Controllers
 				return Unauthorized(new { message = "Invalid email or password." });
 			}
 
-			var token = GenerateJwtToken(user);
-			return Ok(new { token });
+			var roles = await _userManager.GetRolesAsync(user);
+			var token = await GenerateJwtToken(user);
+			return Ok(new { token, roles });
 		}
 
-		private string GenerateJwtToken(ApplicationUser user)
+		private async Task<string> GenerateJwtToken(ApplicationUser user)
 		{
 			var jwtSection = _configuration.GetSection("Jwt");
 			var key = jwtSection["Key"] ?? throw new InvalidOperationException("JWT key is missing.");
 			var issuer = jwtSection["Issuer"];
 			var audience = jwtSection["Audience"];
 			var expiresInMinutes = int.TryParse(jwtSection["ExpiresInMinutes"], out var minutes) ? minutes : 60;
+			var roles = await _userManager.GetRolesAsync(user);
 
 			var claims = new List<Claim>
 			{
@@ -86,6 +113,8 @@ namespace LogiTrack.Controllers
 				new(ClaimTypes.NameIdentifier, user.Id),
 				new(ClaimTypes.Name, user.UserName ?? user.Email ?? string.Empty)
 			};
+
+			claims.AddRange(roles.Select(role => new Claim(ClaimTypes.Role, role)));
 
 			var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key));
 			var credentials = new SigningCredentials(signingKey, SecurityAlgorithms.HmacSha256);
@@ -104,6 +133,7 @@ namespace LogiTrack.Controllers
 		{
 			public string Email { get; set; } = string.Empty;
 			public string Password { get; set; } = string.Empty;
+			public bool IsAdmin { get; set; }
 		}
 
 		public class LoginRequest
