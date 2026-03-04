@@ -1,7 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using LogiTrack.Models;
 
 namespace LogiTrack.Controllers
 {
@@ -9,72 +10,96 @@ namespace LogiTrack.Controllers
     [Route("api/[controller]")]
     public class OrderController : ControllerBase
     {
-        // In-memory storage for demonstration
-        private static List<Order> _orders = new List<Order>();
-        private static int _nextId = 1;
+        private readonly LogiTrackContext _context;
+
+        public OrderController(LogiTrackContext context)
+        {
+            _context = context;
+        }
 
         [HttpGet]
-        public ActionResult<IEnumerable<Order>> GetAllOrders()
+        public async Task<ActionResult<IEnumerable<Order>>> GetAllOrders()
         {
-            return Ok(_orders);
+            var orders = await _context.Orders
+                .Include(order => order.Items)
+                .ToListAsync();
+
+            return Ok(orders);
         }
 
         [HttpGet("{id}")]
-        public ActionResult<Order> GetOrderById(int id)
+        public async Task<ActionResult<Order>> GetOrderById(int id)
         {
-            var order = _orders.FirstOrDefault(o => o.Id == id);
+            var order = await _context.Orders
+                .Include(currentOrder => currentOrder.Items)
+                .FirstOrDefaultAsync(currentOrder => currentOrder.OrderId == id);
+
             if (order == null)
+            {
                 return NotFound();
+            }
 
             return Ok(order);
         }
 
         [HttpPost]
-        public ActionResult<Order> CreateOrder([FromBody] CreateOrderRequest request)
+        public async Task<ActionResult<Order>> CreateOrder([FromBody] CreateOrderRequest request)
         {
-            if (request?.Items == null || request.Items.Count == 0)
-                return BadRequest("Order must contain at least one item");
+            if (string.IsNullOrWhiteSpace(request.CustomerName))
+            {
+                return BadRequest("CustomerName is required.");
+            }
 
             var order = new Order
             {
-                Id = _nextId++,
-                Items = request.Items,
-                CreatedDate = System.DateTime.UtcNow
+                CustomerName = request.CustomerName,
+                DatePlaced = request.DatePlaced ?? System.DateTime.UtcNow
             };
 
-            _orders.Add(order);
-            return CreatedAtAction(nameof(GetOrderById), new { id = order.Id }, order);
+            _context.Orders.Add(order);
+            await _context.SaveChangesAsync();
+
+            if (request.ItemIds is { Count: > 0 })
+            {
+                var itemsToAttach = await _context.InventoryItems
+                    .Where(item => request.ItemIds.Contains(item.ItemId))
+                    .ToListAsync();
+
+                foreach (var item in itemsToAttach)
+                {
+                    item.OrderId = order.OrderId;
+                }
+
+                await _context.SaveChangesAsync();
+            }
+
+            var createdOrder = await _context.Orders
+                .Include(currentOrder => currentOrder.Items)
+                .FirstAsync(currentOrder => currentOrder.OrderId == order.OrderId);
+
+            return CreatedAtAction(nameof(GetOrderById), new { id = createdOrder.OrderId }, createdOrder);
         }
 
         [HttpDelete("{id}")]
-        public ActionResult DeleteOrder(int id)
+        public async Task<ActionResult> DeleteOrder(int id)
         {
-            var order = _orders.FirstOrDefault(o => o.Id == id);
+            var order = await _context.Orders.FindAsync(id);
             if (order == null)
+            {
                 return NotFound();
+            }
 
-            _orders.Remove(order);
+            _context.Orders.Remove(order);
+            await _context.SaveChangesAsync();
+
             return NoContent();
         }
     }
 
-    public class Order
-    {
-        public int Id { get; set; }
-        public List<InventoryItem> Items { get; set; } = new List<InventoryItem>();
-        public System.DateTime CreatedDate { get; set; }
-    }
-
-    public class InventoryItem
-    {
-        public int ItemId { get; set; }
-        public string Name { get; set; }
-        public int Quantity { get; set; }
-        public decimal Price { get; set; }
-    }
-
     public class CreateOrderRequest
     {
-        public List<InventoryItem> Items { get; set; }
+        public string CustomerName { get; set; } = string.Empty;
+        public System.DateTime? DatePlaced { get; set; }
+        public List<int>? ItemIds { get; set; }
     }
 }

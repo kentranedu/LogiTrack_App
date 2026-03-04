@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using LogiTrack.Data;
 using LogiTrack.Models;
 using System.Collections.Generic;
 using System.Threading.Tasks;
@@ -24,12 +23,24 @@ namespace LogiTrack.Controllers
             return await _context.InventoryItems.ToListAsync();
         }
 
+        [HttpGet("{id:int}")]
+        public async Task<ActionResult<InventoryItem>> GetInventoryItem(int id)
+        {
+            var item = await _context.InventoryItems.FindAsync(id);
+            if (item == null)
+            {
+                return NotFound();
+            }
+
+            return item;
+        }
+
         [HttpPost]
-        public async Task<ActionResult<InventoryItem>> AddInventoryItem(InventoryItem item)
+        public async Task<ActionResult<InventoryItem>> AddInventoryItem([FromBody] InventoryItem item)
         {
             _context.InventoryItems.Add(item);
             await _context.SaveChangesAsync();
-            return CreatedAtAction(nameof(GetInventory), new { id = item.Id }, item);
+            return CreatedAtAction(nameof(GetInventoryItem), new { id = item.ItemId }, item);
         }
 
         [HttpDelete("{id}")]
