@@ -7,6 +7,7 @@ obj/
 **/obj/
 
 # SQLite database files
+logitrack.db
 *.db
 *.db-shm
 *.db-wal
