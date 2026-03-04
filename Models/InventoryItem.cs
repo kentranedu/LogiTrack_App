@@ -7,6 +7,8 @@ namespace LogiTrack.Models
         public string Name { get; set; }
         public int Quantity { get; set; }
         public string Location { get; set; }
+        public int? OrderId { get; set; }
+        public Order? Order { get; set; }
 
         public void DisplayInfo()
         {
