@@ -19,6 +19,9 @@ namespace LogiTrack.Controllers
         private readonly IMemoryCache _cache;
         private readonly ILogger<InventoryController> _logger;
         private const string InventoryCacheKey = "inventory_all";
+        private static readonly TimeSpan InventoryCacheDuration = TimeSpan.FromSeconds(30);
+
+        private static string InventoryItemCacheKey(int id) => $"inventory_item_{id}";
 
         public InventoryController(LogiTrackContext context, IMemoryCache cache, ILogger<InventoryController> logger)
         {
@@ -47,7 +50,7 @@ namespace LogiTrack.Controllers
 
             var cacheEntryOptions = new MemoryCacheEntryOptions
             {
-                AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30)
+                AbsoluteExpirationRelativeToNow = InventoryCacheDuration
             };
 
             _cache.Set(InventoryCacheKey, inventory, cacheEntryOptions);
@@ -63,6 +66,13 @@ namespace LogiTrack.Controllers
         [HttpGet("{id:int}")]
         public async Task<ActionResult<InventoryItem>> GetInventoryItem(int id)
         {
+            var itemCacheKey = InventoryItemCacheKey(id);
+
+            if (_cache.TryGetValue(itemCacheKey, out InventoryItem? cachedItem) && cachedItem is not null)
+            {
+                return cachedItem;
+            }
+
             var item = await _context.InventoryItems
                 .AsNoTracking()
                 .FirstOrDefaultAsync(currentItem => currentItem.ItemId == id);
@@ -70,6 +80,11 @@ namespace LogiTrack.Controllers
             {
                 return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
             }
+
+            _cache.Set(itemCacheKey, item, new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = InventoryCacheDuration
+            });
 
             return item;
         }
@@ -86,6 +101,10 @@ namespace LogiTrack.Controllers
             _context.InventoryItems.Add(item);
             await _context.SaveChangesAsync();
             _cache.Remove(InventoryCacheKey);
+            _cache.Set(InventoryItemCacheKey(item.ItemId), item, new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = InventoryCacheDuration
+            });
             return CreatedAtAction(nameof(GetInventoryItem), new { id = item.ItemId }, item);
         }
 
@@ -101,6 +120,7 @@ namespace LogiTrack.Controllers
                 return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
 
             _cache.Remove(InventoryCacheKey);
+            _cache.Remove(InventoryItemCacheKey(id));
             return NoContent();
         }
     }
