@@ -23,6 +23,8 @@ namespace LogiTrack.Controllers
         public async Task<ActionResult<IEnumerable<Order>>> GetAllOrders()
         {
             var orders = await _context.Orders
+                .AsNoTracking()
+                .AsSplitQuery()
                 .Include(order => order.Items)
                 .ToListAsync();
 
@@ -33,6 +35,7 @@ namespace LogiTrack.Controllers
         public async Task<ActionResult<OrderDetailsResponse>> GetOrderById(int id)
         {
             var order = await _context.Orders
+                .AsNoTracking()
                 .Where(currentOrder => currentOrder.OrderId == id)
                 .Select(currentOrder => new OrderDetailsResponse
                 {
@@ -75,7 +78,6 @@ namespace LogiTrack.Controllers
             };
 
             _context.Orders.Add(order);
-            await _context.SaveChangesAsync();
 
             if (request.ItemIds is { Count: > 0 })
             {
@@ -85,31 +87,27 @@ namespace LogiTrack.Controllers
 
                 foreach (var item in itemsToAttach)
                 {
-                    item.OrderId = order.OrderId;
+                    order.Items.Add(item);
                 }
-
-                await _context.SaveChangesAsync();
             }
 
-            var createdOrder = await _context.Orders
-                .Include(currentOrder => currentOrder.Items)
-                .FirstAsync(currentOrder => currentOrder.OrderId == order.OrderId);
+            await _context.SaveChangesAsync();
 
-            return CreatedAtAction(nameof(GetOrderById), new { id = createdOrder.OrderId }, createdOrder);
+            return CreatedAtAction(nameof(GetOrderById), new { id = order.OrderId }, order);
         }
 
         [HttpDelete("{id}")]
         [Authorize(Roles = "Manager")]
         public async Task<ActionResult> DeleteOrder(int id)
         {
-            var order = await _context.Orders.FindAsync(id);
-            if (order == null)
+            var deletedCount = await _context.Orders
+                .Where(order => order.OrderId == id)
+                .ExecuteDeleteAsync();
+
+            if (deletedCount == 0)
             {
                 return NotFound(ApiError.Create("NotFound", $"Order with id {id} was not found.", HttpContext.TraceIdentifier));
             }
-
-            _context.Orders.Remove(order);
-            await _context.SaveChangesAsync();
 
             return NoContent();
         }

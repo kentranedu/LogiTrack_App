@@ -31,7 +31,9 @@ namespace LogiTrack.Controllers
                 return cachedInventory;
             }
 
-            var inventory = await _context.InventoryItems.ToListAsync();
+            var inventory = await _context.InventoryItems
+                .AsNoTracking()
+                .ToListAsync();
 
             var cacheEntryOptions = new MemoryCacheEntryOptions
             {
@@ -46,7 +48,9 @@ namespace LogiTrack.Controllers
         [HttpGet("{id:int}")]
         public async Task<ActionResult<InventoryItem>> GetInventoryItem(int id)
         {
-            var item = await _context.InventoryItems.FindAsync(id);
+            var item = await _context.InventoryItems
+                .AsNoTracking()
+                .FirstOrDefaultAsync(currentItem => currentItem.ItemId == id);
             if (item == null)
             {
                 return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
@@ -66,6 +70,7 @@ namespace LogiTrack.Controllers
 
             _context.InventoryItems.Add(item);
             await _context.SaveChangesAsync();
+            _cache.Remove(InventoryCacheKey);
             return CreatedAtAction(nameof(GetInventoryItem), new { id = item.ItemId }, item);
         }
 
@@ -73,12 +78,14 @@ namespace LogiTrack.Controllers
         [Authorize(Roles = "Manager")]
         public async Task<IActionResult> DeleteInventoryItem(int id)
         {
-            var item = await _context.InventoryItems.FindAsync(id);
-            if (item == null)
+            var deletedCount = await _context.InventoryItems
+                .Where(item => item.ItemId == id)
+                .ExecuteDeleteAsync();
+
+            if (deletedCount == 0)
                 return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
 
-            _context.InventoryItems.Remove(item);
-            await _context.SaveChangesAsync();
+            _cache.Remove(InventoryCacheKey);
             return NoContent();
         }
     }
