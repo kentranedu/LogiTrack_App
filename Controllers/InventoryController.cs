@@ -4,6 +4,7 @@ using LogiTrack.Models;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace LogiTrack.Controllers
 {
@@ -13,10 +14,12 @@ namespace LogiTrack.Controllers
     public class InventoryController : ControllerBase
     {
         private readonly LogiTrackContext _context;
+        private readonly IMemoryCache _cache;
 
-        public InventoryController(LogiTrackContext context)
+        public InventoryController(LogiTrackContext context, IMemoryCache cache)
         {
-            _context = context;
+            _context = context;
+            _cache = cache;
         }
 
         [HttpGet]
