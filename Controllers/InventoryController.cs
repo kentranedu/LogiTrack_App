@@ -5,6 +5,8 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 
 namespace LogiTrack.Controllers
 {
@@ -15,19 +17,27 @@ namespace LogiTrack.Controllers
     {
         private readonly LogiTrackContext _context;
         private readonly IMemoryCache _cache;
+        private readonly ILogger<InventoryController> _logger;
         private const string InventoryCacheKey = "inventory_all";
 
-        public InventoryController(LogiTrackContext context, IMemoryCache cache)
+        public InventoryController(LogiTrackContext context, IMemoryCache cache, ILogger<InventoryController> logger)
         {
             _context = context;
             _cache = cache;
+            _logger = logger;
         }
 
         [HttpGet]
         public async Task<ActionResult<IEnumerable<InventoryItem>>> GetInventory()
         {
+            var stopwatch = Stopwatch.StartNew();
+
             if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
             {
+                stopwatch.Stop();
+                Response.Headers["X-Inventory-Cache"] = "HIT";
+                Response.Headers["X-Inventory-Elapsed-Ms"] = stopwatch.ElapsedMilliseconds.ToString();
+                _logger.LogInformation("Inventory cache HIT in {ElapsedMs} ms", stopwatch.ElapsedMilliseconds);
                 return cachedInventory;
             }
 
@@ -41,6 +51,11 @@ namespace LogiTrack.Controllers
             };
 
             _cache.Set(InventoryCacheKey, inventory, cacheEntryOptions);
+
+            stopwatch.Stop();
+            Response.Headers["X-Inventory-Cache"] = "MISS";
+            Response.Headers["X-Inventory-Elapsed-Ms"] = stopwatch.ElapsedMilliseconds.ToString();
+            _logger.LogInformation("Inventory cache MISS in {ElapsedMs} ms", stopwatch.ElapsedMilliseconds);
 
             return inventory;
         }
