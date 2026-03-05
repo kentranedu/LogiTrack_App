@@ -8,6 +8,7 @@ using Microsoft.Extensions.Caching.Memory;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using System.Linq;
+using System.Threading;
 
 namespace LogiTrack.Controllers
 {
@@ -20,7 +21,8 @@ namespace LogiTrack.Controllers
         private readonly IMemoryCache _cache;
         private readonly ILogger<InventoryController> _logger;
         private const string InventoryCacheKey = "inventory_all";
-        private static readonly TimeSpan InventoryCacheDuration = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan InventoryCacheDuration = TimeSpan.FromMinutes(30);
+        private static readonly SemaphoreSlim InventoryCacheLock = new(1, 1);
 
         private static string InventoryItemCacheKey(int id) => $"inventory_item_{id}";
 
@@ -28,8 +30,67 @@ namespace LogiTrack.Controllers
         {
             return new MemoryCacheEntryOptions
             {
-                AbsoluteExpirationRelativeToNow = InventoryCacheDuration
+                AbsoluteExpirationRelativeToNow = InventoryCacheDuration,
+                SlidingExpiration = TimeSpan.FromMinutes(5)
             };
+        }
+
+        private async Task<(List<InventoryItem> Inventory, bool WasCacheHit)> GetOrRehydrateInventoryAsync()
+        {
+            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
+            {
+                return (cachedInventory, true);
+            }
+
+            await InventoryCacheLock.WaitAsync();
+            try
+            {
+                if (_cache.TryGetValue(InventoryCacheKey, out cachedInventory) && cachedInventory is not null)
+                {
+                    return (cachedInventory, true);
+                }
+
+                var rehydratedInventory = await _context.InventoryItems
+                    .AsNoTracking()
+                    .ToListAsync();
+
+                _cache.Set(InventoryCacheKey, rehydratedInventory, BuildCacheOptions());
+
+                foreach (var inventoryItem in rehydratedInventory)
+                {
+                    _cache.Set(InventoryItemCacheKey(inventoryItem.ItemId), inventoryItem, BuildCacheOptions());
+                }
+
+                return (rehydratedInventory, false);
+            }
+            finally
+            {
+                InventoryCacheLock.Release();
+            }
+        }
+
+        private async Task<List<InventoryItem>> ForceRehydrateInventoryAsync()
+        {
+            await InventoryCacheLock.WaitAsync();
+            try
+            {
+                var rehydratedInventory = await _context.InventoryItems
+                    .AsNoTracking()
+                    .ToListAsync();
+
+                _cache.Set(InventoryCacheKey, rehydratedInventory, BuildCacheOptions());
+
+                foreach (var inventoryItem in rehydratedInventory)
+                {
+                    _cache.Set(InventoryItemCacheKey(inventoryItem.ItemId), inventoryItem, BuildCacheOptions());
+                }
+
+                return rehydratedInventory;
+            }
+            finally
+            {
+                InventoryCacheLock.Release();
+            }
         }
 
         public InventoryController(LogiTrackContext context, IMemoryCache cache, ILogger<InventoryController> logger)
@@ -44,25 +105,12 @@ namespace LogiTrack.Controllers
         {
             var stopwatch = Stopwatch.StartNew();
 
-            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
-            {
-                stopwatch.Stop();
-                Response.Headers["X-Inventory-Cache"] = "HIT";
-                Response.Headers["X-Inventory-Elapsed-Ms"] = stopwatch.ElapsedMilliseconds.ToString();
-                _logger.LogInformation("Inventory cache HIT in {ElapsedMs} ms", stopwatch.ElapsedMilliseconds);
-                return cachedInventory;
-            }
-
-            var inventory = await _context.InventoryItems
-                .AsNoTracking()
-                .ToListAsync();
-
-            _cache.Set(InventoryCacheKey, inventory, BuildCacheOptions());
+            var (inventory, wasCacheHit) = await GetOrRehydrateInventoryAsync();
 
             stopwatch.Stop();
-            Response.Headers["X-Inventory-Cache"] = "MISS";
+            Response.Headers["X-Inventory-Cache"] = wasCacheHit ? "HIT" : "REHYDRATED";
             Response.Headers["X-Inventory-Elapsed-Ms"] = stopwatch.ElapsedMilliseconds.ToString();
-            _logger.LogInformation("Inventory cache MISS in {ElapsedMs} ms", stopwatch.ElapsedMilliseconds);
+            _logger.LogInformation("Inventory cache {CacheState} in {ElapsedMs} ms", wasCacheHit ? "HIT" : "REHYDRATED", stopwatch.ElapsedMilliseconds);
 
             return inventory;
         }
@@ -77,17 +125,24 @@ namespace LogiTrack.Controllers
                 return cachedItem;
             }
 
-            var item = await _context.InventoryItems
-                .AsNoTracking()
-                .FirstOrDefaultAsync(currentItem => currentItem.ItemId == id);
-            if (item == null)
+            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
             {
-                return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
+                var itemFromInventoryCache = cachedInventory.FirstOrDefault(currentItem => currentItem.ItemId == id);
+                if (itemFromInventoryCache is not null)
+                {
+                    _cache.Set(itemCacheKey, itemFromInventoryCache, BuildCacheOptions());
+                    return itemFromInventoryCache;
+                }
             }
 
-            _cache.Set(itemCacheKey, item, BuildCacheOptions());
+            var (rehydratedInventory, _) = await GetOrRehydrateInventoryAsync();
+            var rehydratedItem = rehydratedInventory.FirstOrDefault(currentItem => currentItem.ItemId == id);
+            if (rehydratedItem is not null)
+            {
+                return rehydratedItem;
+            }
 
-            return item;
+            return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
         }
 
         [HttpPost]
@@ -105,13 +160,7 @@ namespace LogiTrack.Controllers
             var itemCacheKey = InventoryItemCacheKey(item.ItemId);
             _cache.Set(itemCacheKey, item, BuildCacheOptions());
 
-            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
-            {
-                var updatedInventory = new List<InventoryItem>(cachedInventory.Count + 1);
-                updatedInventory.AddRange(cachedInventory);
-                updatedInventory.Add(item);
-                _cache.Set(InventoryCacheKey, updatedInventory, BuildCacheOptions());
-            }
+            await ForceRehydrateInventoryAsync();
             return CreatedAtAction(nameof(GetInventoryItem), new { id = item.ItemId }, item);
         }
 
@@ -128,14 +177,7 @@ namespace LogiTrack.Controllers
 
             _cache.Remove(InventoryItemCacheKey(id));
 
-            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
-            {
-                var updatedInventory = cachedInventory
-                    .Where(item => item.ItemId != id)
-                    .ToList();
-
-                _cache.Set(InventoryCacheKey, updatedInventory, BuildCacheOptions());
-            }
+            await ForceRehydrateInventoryAsync();
             return NoContent();
         }
     }
