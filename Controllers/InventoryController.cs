@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using System.Linq;
 
 namespace LogiTrack.Controllers
 {
@@ -22,6 +23,14 @@ namespace LogiTrack.Controllers
         private static readonly TimeSpan InventoryCacheDuration = TimeSpan.FromSeconds(30);
 
         private static string InventoryItemCacheKey(int id) => $"inventory_item_{id}";
+
+        private static MemoryCacheEntryOptions BuildCacheOptions()
+        {
+            return new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = InventoryCacheDuration
+            };
+        }
 
         public InventoryController(LogiTrackContext context, IMemoryCache cache, ILogger<InventoryController> logger)
         {
@@ -48,12 +57,7 @@ namespace LogiTrack.Controllers
                 .AsNoTracking()
                 .ToListAsync();
 
-            var cacheEntryOptions = new MemoryCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = InventoryCacheDuration
-            };
-
-            _cache.Set(InventoryCacheKey, inventory, cacheEntryOptions);
+            _cache.Set(InventoryCacheKey, inventory, BuildCacheOptions());
 
             stopwatch.Stop();
             Response.Headers["X-Inventory-Cache"] = "MISS";
@@ -81,10 +85,7 @@ namespace LogiTrack.Controllers
                 return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
             }
 
-            _cache.Set(itemCacheKey, item, new MemoryCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = InventoryCacheDuration
-            });
+            _cache.Set(itemCacheKey, item, BuildCacheOptions());
 
             return item;
         }
@@ -100,11 +101,17 @@ namespace LogiTrack.Controllers
 
             _context.InventoryItems.Add(item);
             await _context.SaveChangesAsync();
-            _cache.Remove(InventoryCacheKey);
-            _cache.Set(InventoryItemCacheKey(item.ItemId), item, new MemoryCacheEntryOptions
+
+            var itemCacheKey = InventoryItemCacheKey(item.ItemId);
+            _cache.Set(itemCacheKey, item, BuildCacheOptions());
+
+            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
             {
-                AbsoluteExpirationRelativeToNow = InventoryCacheDuration
-            });
+                var updatedInventory = new List<InventoryItem>(cachedInventory.Count + 1);
+                updatedInventory.AddRange(cachedInventory);
+                updatedInventory.Add(item);
+                _cache.Set(InventoryCacheKey, updatedInventory, BuildCacheOptions());
+            }
             return CreatedAtAction(nameof(GetInventoryItem), new { id = item.ItemId }, item);
         }
 
@@ -119,8 +126,16 @@ namespace LogiTrack.Controllers
             if (deletedCount == 0)
                 return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
 
-            _cache.Remove(InventoryCacheKey);
             _cache.Remove(InventoryItemCacheKey(id));
+
+            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
+            {
+                var updatedInventory = cachedInventory
+                    .Where(item => item.ItemId != id)
+                    .ToList();
+
+                _cache.Set(InventoryCacheKey, updatedInventory, BuildCacheOptions());
+            }
             return NoContent();
         }
     }
