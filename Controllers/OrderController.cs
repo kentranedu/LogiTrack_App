@@ -20,13 +20,33 @@ namespace LogiTrack.Controllers
         }
 
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<Order>>> GetAllOrders()
+        public async Task<ActionResult<IEnumerable<Order>>> GetAllOrders([FromQuery] int? page = null, [FromQuery] int? pageSize = null)
         {
-            var orders = await _context.Orders
+            var ordersQuery = _context.Orders
                 .AsNoTracking()
                 .AsSplitQuery()
-                .Include(order => order.Items)
-                .ToListAsync();
+                .Include(order => order.Items);
+
+            if (page.HasValue || pageSize.HasValue)
+            {
+                var currentPage = Math.Max(page ?? 1, 1);
+                var currentPageSize = Math.Clamp(pageSize ?? 25, 1, 100);
+                var totalCount = await ordersQuery.CountAsync();
+
+                var pagedOrders = await ordersQuery
+                    .OrderByDescending(order => order.DatePlaced)
+                    .Skip((currentPage - 1) * currentPageSize)
+                    .Take(currentPageSize)
+                    .ToListAsync();
+
+                Response.Headers["X-Pagination-Page"] = currentPage.ToString();
+                Response.Headers["X-Pagination-PageSize"] = currentPageSize.ToString();
+                Response.Headers["X-Pagination-TotalCount"] = totalCount.ToString();
+
+                return Ok(pagedOrders);
+            }
+
+            var orders = await ordersQuery.ToListAsync();
 
             return Ok(orders);
         }

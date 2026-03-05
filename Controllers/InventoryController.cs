@@ -35,9 +35,9 @@ namespace LogiTrack.Controllers
             };
         }
 
-        private async Task<(List<InventoryItem> Inventory, bool WasCacheHit)> GetOrRehydrateInventoryAsync()
+        private async Task<(List<InventoryItem> Inventory, bool WasCacheHit)> GetOrRehydrateInventoryAsync(bool forceRefresh = false)
         {
-            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
+            if (!forceRefresh && _cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
             {
                 return (cachedInventory, true);
             }
@@ -45,7 +45,7 @@ namespace LogiTrack.Controllers
             await InventoryCacheLock.WaitAsync();
             try
             {
-                if (_cache.TryGetValue(InventoryCacheKey, out cachedInventory) && cachedInventory is not null)
+                if (!forceRefresh && _cache.TryGetValue(InventoryCacheKey, out cachedInventory) && cachedInventory is not null)
                 {
                     return (cachedInventory, true);
                 }
@@ -69,27 +69,38 @@ namespace LogiTrack.Controllers
             }
         }
 
-        private async Task<List<InventoryItem>> ForceRehydrateInventoryAsync()
+        private void UpsertInventoryCaches(InventoryItem item)
         {
-            await InventoryCacheLock.WaitAsync();
-            try
+            _cache.Set(InventoryItemCacheKey(item.ItemId), item, BuildCacheOptions());
+
+            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
             {
-                var rehydratedInventory = await _context.InventoryItems
-                    .AsNoTracking()
-                    .ToListAsync();
-
-                _cache.Set(InventoryCacheKey, rehydratedInventory, BuildCacheOptions());
-
-                foreach (var inventoryItem in rehydratedInventory)
+                var updatedInventory = new List<InventoryItem>(cachedInventory);
+                var existingIndex = updatedInventory.FindIndex(currentItem => currentItem.ItemId == item.ItemId);
+                if (existingIndex >= 0)
                 {
-                    _cache.Set(InventoryItemCacheKey(inventoryItem.ItemId), inventoryItem, BuildCacheOptions());
+                    updatedInventory[existingIndex] = item;
+                }
+                else
+                {
+                    updatedInventory.Add(item);
                 }
 
-                return rehydratedInventory;
+                _cache.Set(InventoryCacheKey, updatedInventory, BuildCacheOptions());
             }
-            finally
+        }
+
+        private void RemoveInventoryCaches(int itemId)
+        {
+            _cache.Remove(InventoryItemCacheKey(itemId));
+
+            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
             {
-                InventoryCacheLock.Release();
+                var updatedInventory = cachedInventory
+                    .Where(item => item.ItemId != itemId)
+                    .ToList();
+
+                _cache.Set(InventoryCacheKey, updatedInventory, BuildCacheOptions());
             }
         }
 
@@ -101,18 +112,33 @@ namespace LogiTrack.Controllers
         }
 
         [HttpGet]
-        public async Task<ActionResult<IEnumerable<InventoryItem>>> GetInventory()
+        public async Task<ActionResult<IEnumerable<InventoryItem>>> GetInventory([FromQuery] int? page = null, [FromQuery] int? pageSize = null)
         {
             var stopwatch = Stopwatch.StartNew();
 
             var (inventory, wasCacheHit) = await GetOrRehydrateInventoryAsync();
+            IEnumerable<InventoryItem> responseItems = inventory;
+
+            if (page.HasValue || pageSize.HasValue)
+            {
+                var currentPage = Math.Max(page ?? 1, 1);
+                var currentPageSize = Math.Clamp(pageSize ?? 25, 1, 100);
+                responseItems = inventory
+                    .Skip((currentPage - 1) * currentPageSize)
+                    .Take(currentPageSize)
+                    .ToList();
+
+                Response.Headers["X-Pagination-Page"] = currentPage.ToString();
+                Response.Headers["X-Pagination-PageSize"] = currentPageSize.ToString();
+                Response.Headers["X-Pagination-TotalCount"] = inventory.Count.ToString();
+            }
 
             stopwatch.Stop();
             Response.Headers["X-Inventory-Cache"] = wasCacheHit ? "HIT" : "REHYDRATED";
             Response.Headers["X-Inventory-Elapsed-Ms"] = stopwatch.ElapsedMilliseconds.ToString();
             _logger.LogInformation("Inventory cache {CacheState} in {ElapsedMs} ms", wasCacheHit ? "HIT" : "REHYDRATED", stopwatch.ElapsedMilliseconds);
 
-            return inventory;
+            return Ok(responseItems);
         }
 
         [HttpGet("{id:int}")]
@@ -157,10 +183,7 @@ namespace LogiTrack.Controllers
             _context.InventoryItems.Add(item);
             await _context.SaveChangesAsync();
 
-            var itemCacheKey = InventoryItemCacheKey(item.ItemId);
-            _cache.Set(itemCacheKey, item, BuildCacheOptions());
-
-            await ForceRehydrateInventoryAsync();
+            UpsertInventoryCaches(item);
             return CreatedAtAction(nameof(GetInventoryItem), new { id = item.ItemId }, item);
         }
 
@@ -175,9 +198,7 @@ namespace LogiTrack.Controllers
             if (deletedCount == 0)
                 return NotFound(ApiError.Create("NotFound", $"Inventory item with id {id} was not found.", HttpContext.TraceIdentifier));
 
-            _cache.Remove(InventoryItemCacheKey(id));
-
-            await ForceRehydrateInventoryAsync();
+            RemoveInventoryCaches(id);
             return NoContent();
         }
     }
