@@ -74,18 +74,17 @@ namespace LogiTrack.Controllers
 			}
 
 			var roles = await _userManager.GetRolesAsync(user);
-			var token = await GenerateJwtToken(user);
+			var token = GenerateJwtToken(user, roles);
 			return Ok(new { token, roles });
 		}
 
-		private async Task<string> GenerateJwtToken(ApplicationUser user)
+		private string GenerateJwtToken(ApplicationUser user, IList<string> roles)
 		{
 			var jwtSection = _configuration.GetSection("Jwt");
 			var key = jwtSection["Key"] ?? throw new InvalidOperationException("JWT key is missing.");
 			var issuer = jwtSection["Issuer"];
 			var audience = jwtSection["Audience"];
 			var expiresInMinutes = int.TryParse(jwtSection["ExpiresInMinutes"], out var minutes) ? minutes : 60;
-			var roles = await _userManager.GetRolesAsync(user);
 
 			var claims = new List<Claim>
 			{
