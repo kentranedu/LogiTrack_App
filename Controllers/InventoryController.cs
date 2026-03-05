@@ -15,6 +15,7 @@ namespace LogiTrack.Controllers
     {
         private readonly LogiTrackContext _context;
         private readonly IMemoryCache _cache;
+        private const string InventoryCacheKey = "inventory_all";
 
         public InventoryController(LogiTrackContext context, IMemoryCache cache)
         {
@@ -25,7 +26,21 @@ namespace LogiTrack.Controllers
         [HttpGet]
         public async Task<ActionResult<IEnumerable<InventoryItem>>> GetInventory()
         {
-            return await _context.InventoryItems.ToListAsync();
+            if (_cache.TryGetValue(InventoryCacheKey, out List<InventoryItem>? cachedInventory) && cachedInventory is not null)
+            {
+                return cachedInventory;
+            }
+
+            var inventory = await _context.InventoryItems.ToListAsync();
+
+            var cacheEntryOptions = new MemoryCacheEntryOptions
+            {
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(30)
+            };
+
+            _cache.Set(InventoryCacheKey, inventory, cacheEntryOptions);
+
+            return inventory;
         }
 
         [HttpGet("{id:int}")]
