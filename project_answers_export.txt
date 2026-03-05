@@ -1,0 +1,151 @@
+LogiTrack API - Exported Answers
+Date: 2026-03-05
+
+1) Describe your API project and its key features.
+
+Your LogiTrack project is an ASP.NET Core Web API for logistics operations, focused on inventory and order management with secure access and production-minded API features.
+
+Project Overview
+- Built on .NET 10 (net10.0) with ASP.NET Core Web API.
+- Uses EF Core + SQLite for persistence (logitrack.db) through LogiTrackContext.
+- Domain centers on InventoryItem and Order, with a one-to-many relationship (Order -> many InventoryItem).
+- Includes authentication/authorization via ASP.NET Identity and JWT.
+
+Key Features
+- JWT authentication:
+  - Register/login endpoints under api/auth.
+  - Token generation with user and role claims.
+- Role-based authorization:
+  - Global protected controllers ([Authorize]) for inventory/orders.
+  - Manager-only mutations like create/delete inventory and create/delete orders ([Authorize(Roles = "Manager")]).
+- Inventory API with caching:
+  - In-memory cache for full inventory list and per-item cache keys.
+  - Rehydration strategy and cache-hit telemetry headers (X-Inventory-Cache, X-Inventory-Elapsed-Ms).
+- Order API with related items:
+  - Fetch all orders with included items, get order by id with shaped DTO response, create order with optional item links.
+- Pagination support:
+  - Query params (page, pageSize) on list endpoints.
+  - Pagination metadata returned in response headers (for example X-Pagination-TotalCount).
+- API hardening and operability:
+  - Global rate limiter (fixed window, per user/IP).
+  - Problem details + trace IDs and standardized not-found/validation error payloads.
+  - Health endpoints: /health/live and /health/ready.
+  - Swagger/OpenAPI enabled in development.
+
+Tech Stack
+- ASP.NET Core Web API
+- EF Core SQLite
+- ASP.NET Core Identity
+- JWT Bearer authentication
+- API Versioning (Asp.Versioning)
+- Swagger/Swashbuckle OpenAPI
+
+
+2) What security measures did you implement?
+
+- JWT-based authentication:
+  - Issues signed bearer tokens on login.
+  - Validates issuer, audience, token lifetime, and signing key on protected requests.
+- ASP.NET Identity user management:
+  - Uses UserManager/SignInManager for secure credential handling.
+  - Stores users through Identity + EF Core.
+- Strong password policy:
+  - Minimum length 12.
+  - Requires uppercase, lowercase, digit, non-alphanumeric, and unique chars.
+- Account lockout protection:
+  - Lockout after 5 failed attempts for 15 minutes.
+  - Login checks use lockoutOnFailure: true.
+- Role-based authorization (RBAC):
+  - Controllers require authenticated users ([Authorize]).
+  - Sensitive write/delete endpoints restricted to Manager role.
+- Rate limiting / anti-abuse:
+  - Global fixed-window limiter (120 requests/min) partitioned by user identity or client IP.
+  - Returns 429 problem-style response when exceeded.
+- HTTPS enforcement:
+  - UseHttpsRedirection ensures traffic is redirected to TLS.
+- Input validation:
+  - Data annotations for auth requests ([Required], [EmailAddress], [MinLength]).
+  - Basic server-side checks for required fields before writes.
+- Controlled anonymous access:
+  - Only auth endpoints and health probes are explicitly anonymous.
+  - Business APIs remain protected.
+
+Production note:
+- appsettings.json currently contains a placeholder JWT key and should be replaced with a secure secret in production.
+
+
+3) What were the major challenges you faced, and how did you overcome them?
+
+- Adding authentication to an existing API:
+  - Challenge: Introduce secure auth without rewriting the whole data layer.
+  - Solution: Moved to IdentityDbContext<ApplicationUser>, configured Identity services, and built AuthController with register/login + JWT issuance.
+- Designing secure defaults:
+  - Challenge: Avoid weak authentication settings.
+  - Solution: Enforced strong password rules, lockout policy, JWT validation, and role-based authorization.
+- Evolving model relationships (orders and inventory):
+  - Challenge: Correctly model and query Order -> InventoryItem association.
+  - Solution: Explicit relationship mapping in DbContext + EF migrations + DTO-based order reads.
+- JSON reference cycles:
+  - Challenge: Circular references due to navigation properties.
+  - Solution: Configured ReferenceHandler.IgnoreCycles.
+- Balancing performance and correctness in inventory reads:
+  - Challenge: Improve speed without stale cache issues.
+  - Solution: Added list/item cache, semaphore-protected rehydration, and write-path cache updates/invalidation.
+- API abuse resilience:
+  - Challenge: Traffic spikes and abuse.
+  - Solution: Global rate limiting with consistent 429 responses.
+- Deployment observability:
+  - Challenge: Faster diagnosis of production issues.
+  - Solution: ProblemDetails trace IDs, JSON console logs, and health endpoints.
+
+
+4) How did you implement key components like business logic, data persistence, and state management?
+
+Business Logic
+- Implemented primarily in controllers:
+  - AuthController
+  - InventoryController
+  - OrderController
+- Includes validation, auth flow decisions, authorization checks, pagination handling, and standardized error responses.
+
+Data Persistence
+- Uses EF Core with SQLite.
+- DbContext: LogiTrackContext.
+- Models: Order, InventoryItem, ApplicationUser.
+- Relationship: Order has many InventoryItem via OrderId foreign key.
+- Schema managed via migrations.
+- Startup applies pending migrations with Database.Migrate().
+
+State Management
+- Persistent state in database: users, orders, inventory.
+- Runtime state in IMemoryCache for inventory reads:
+  - Full list cache: inventory_all
+  - Per-item cache: inventory_item_{id}
+- Consistency via cache rehydration, semaphore lock, upsert on create, and invalidation on delete.
+- Request-level state through JWT claims used by authorization middleware.
+
+
+5) How did you manage caching and optimize performance?
+
+- Two-level in-memory caching for inventory:
+  - inventory_all for full list.
+  - inventory_item_{id} for item-level reads.
+- Read-through with controlled rehydration:
+  - Cache miss triggers AsNoTracking DB read and repopulates caches.
+- Cache stampede protection:
+  - SemaphoreSlim lock serializes rehydration, with double-check pattern.
+- Cache expiration tuning:
+  - Absolute expiration: 30 minutes.
+  - Sliding expiration: 5 minutes.
+- Cache coherence on writes:
+  - Upsert on create and targeted invalidation/update on delete.
+- Cache observability:
+  - Response headers: X-Inventory-Cache and X-Inventory-Elapsed-Ms.
+  - Structured logs include cache state and elapsed time.
+- Query-level optimization beyond cache:
+  - AsNoTracking on read-heavy endpoints.
+  - AsSplitQuery and projection for order reads.
+  - Pagination with bounded page sizes.
+  - ExecuteDeleteAsync for direct SQL deletes.
+- Rate limiter as performance guardrail:
+  - Global limiter protects API/DB from abusive spikes.
